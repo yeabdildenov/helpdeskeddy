@@ -37,8 +37,8 @@ except ImportError:
     MATPLOTLIB_AVAILABLE = False
 
 # --- КОНСТАНТЫ И СЛОВАРИ ---
-EMAIL = "a.marchenko@arbuz.kz"
-API_KEY = "d7e1fce9-305b-43e4-a272-7d26e10c9c43"
+EMAIL = "-------"
+API_KEY = "-------"
 BASE_URL = "https://arbuz.helpdeskeddy.com/api/v2"
 
 credentials = f"{EMAIL}:{API_KEY}"
@@ -49,7 +49,7 @@ HEADERS = {
     "Content-Type": "application/json"
 }
 
-FORM_URL = "https://docs.google.com/forms/d/e/1FAIpQLSdxcu0jMVe3knll8goTB1lOfrqXZUz2EKbmmVinihT7SCs44w/viewform"
+FORM_URL = "---------"
 WAIT_TIMEOUT = 10
 
 MANAGER_DATA = {
