@@ -277,105 +277,6 @@ def setup_database():
 def log_skipped_ticket_to_db(ticket_id: int, reason: str):
     try:
         conn = sqlite3.connect('statistics.db')
-        cursor = conn.cursor()
-        cursor.execute("INSERT INTO skipped_tickets (ticket_id, reason) VALUES (?, ?)", (ticket_id, reason))
-        conn.commit()
-        conn.close()
-    except sqlite3.Error as e:
-        if 'app' in globals() and isinstance(app, App):
-            app.log(f"❌ Ошибка сохранения пропуска для тикета ID={ticket_id} в БД: {e}", "error")
-
-
-def save_ticket_data_to_db(fields: dict, ticket_id: int):
-    try:
-        conn = sqlite3.connect('statistics.db')
-        cursor = conn.cursor()
-        cursor.execute('''
-                       INSERT INTO tickets (ticket_id, data_peredachi, rukovoditel, sklad, ssylka, data_ispolneniya,
-                                            prosrochka, nomer_zakaza, tag_zhaloby, sut_zhaloby, otvetstvennyy_sotrudnik,
-                                            reshenie_tiketa, punkt_uderzhaniya, summa_uderzhaniya, kak_reshen_vopros,
-                                            summa_poter)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(ticket_id) DO NOTHING
-                       ''', (
-                           ticket_id,
-                           fields.get("Дата передачи", ""), fields.get("Руководитель", ""),
-                           fields.get("Склад", ""), fields.get("Ссылка", ""),
-                           fields.get("Дата исполнения", ""), fields.get("Просрочка", ""),
-                           fields.get("Номер заказа", ""), fields.get("Тег жалобы", ""),
-                           fields.get("Суть жалобы", ""), fields.get("Ответственный сотрудник", ""),
-                           fields.get("Решение тикета", ""), fields.get("Пункт удержания", ""),
-                           fields.get("Сумма удержания", ""), fields.get("Как решен вопрос", ""),
-                           fields.get("Сумма потерь", "")
-                       ))
-        conn.commit()
-        conn.close()
-        if 'app' in globals() and isinstance(app, App):
-            app.log(f"📊 Статистика по тикету ID={ticket_id} сохранена в БД.", "info")
-    except sqlite3.Error as e:
-        if 'app' in globals() and isinstance(app, App):
-            app.log(f"❌ Ошибка сохранения в БД для тикета ID={ticket_id}: {e}", "error")
-
-
-def calculate_sum_from_string(s: str) -> str:
-    if not isinstance(s, str) or '+' not in s:
-        return s
-    if not re.match(r"^[ \d+]+$", s):
-        return s
-    try:
-        return str(eval(s))
-    except Exception:
-        return s
-
-
-def parse_manager_comment_for_deduction(text: str) -> tuple[str, str, str]:
-    employee, point, amount = "", "", ""
-    employee_pattern_keyword = re.compile(
-        r"(?:сотрудник\w*|оператор\w*|курьер\w*|винов\w*)\s+(" + RE_KAZ_NAME_FLEX + r")", re.IGNORECASE)
-    match = employee_pattern_keyword.search(text)
-    if not match:
-        employee_pattern_fallback = re.compile(r"^(" + RE_KAZ_NAME_FLEX + r")", re.IGNORECASE)
-        match = employee_pattern_fallback.search(text)
-    if match:
-        full_name_match = match.group(1).strip()
-        words = full_name_match.split()
-        first_word = words[0].lower()
-        if first_word not in INVALID_NAME_STARTS:
-            if words and words[-1].lower() in STOP_WORDS_AFTER_NAME:
-                employee = " ".join(words[:-1])
-            else:
-                employee = full_name_match
-
-    point_pattern = re.compile(r"(?:пункт\w*|п\.?)\s*(\d+(?:[.,]\d+)*)", re.IGNORECASE)
-    match = point_pattern.search(text)
-    if match:
-        point = match.group(1).replace(",", ".").strip()
-
-    amount_pattern_main = re.compile(
-        r"(?:удержать|удержание|штраф)\s(?:с\s.*?)?\s*([\d\s+]{2,})\s*(?:тг|тенге)?", re.IGNORECASE)
-    match = amount_pattern_main.search(text)
-    if match:
-        amount = match.group(1).strip().replace(" ", "")
-
-    if not amount:
-        amount_pattern_fallback = re.compile(r"сумма\s*([\d\s+]{2,})\s*(?:тг|тенге)?", re.IGNORECASE)
-        match = amount_pattern_fallback.search(text)
-        if match:
-            amount = match.group(1).strip().replace(" ", "")
-
-    return employee, point, amount
-
-
-def strip_html(html_text: str) -> str:
-    if not html_text: return ""
-    text = re.sub(r"<[^>]+>", " ", html_text)
-    text = unescape(text)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text
-
-
-def parse_api_datetime(s: str) -> datetime | None:
-    if not s: return None
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%H:%M:%S %d.%m.%Y", "%d.%m.%Y %H:%M:%S", "%Y-%m-%d"):
         try:
             return datetime.strptime(s.strip(), fmt)
         except Exception:
@@ -512,105 +413,6 @@ def extract_deduction_custom_fields(ticket: dict) -> tuple[str, str, str]:
     custom_fields = ticket.get("custom_fields", [])
     if not custom_fields: return "", "", ""
     for cf in custom_fields:
-        field_id, field_value = cf.get("id"), cf.get("field_value", "")
-        if field_id == 22 and field_value:
-            responsible_employee = str(field_value)
-        elif field_id == 26 and field_value:
-            penalty_point = str(field_value)
-        elif field_id == 27 and field_value:
-            deduction_amount = str(field_value)
-    return responsible_employee, penalty_point, deduction_amount
-
-
-def api_get_tickets(owner_id: int = 1, status_list: str = "v-processe", page: int = 1) -> dict:
-    url, params = f"{BASE_URL}/tickets", {"status_list": status_list, "owner_list": str(owner_id), "page": page,
-                                          "limit": 50}
-    r = requests.get(url, params=params, headers=HEADERS, timeout=30)
-    r.raise_for_status();
-    return r.json()
-
-
-def api_get_comments(ticket_id: int) -> dict:
-    url, params = f"{BASE_URL}/tickets/{ticket_id}/comments", {"page": 1}
-    r = requests.get(url, params=params, headers=HEADERS, timeout=30)
-    r.raise_for_status();
-    return r.json()
-
-
-def api_get_ticket_audit(ticket_id: int) -> dict:
-    url = f"{BASE_URL}/tickets/{ticket_id}/audit"
-    r = requests.get(url, headers=HEADERS, timeout=30)
-    r.raise_for_status();
-    return r.json()
-
-
-def api_update_ticket_status(ticket_id: int, status: str) -> dict:
-    url, payload = f"{BASE_URL}/tickets/{ticket_id}/", {"status_id": status}
-    r = requests.put(url, json=payload, headers=HEADERS, timeout=30)
-    r.raise_for_status();
-    return r.json()
-
-
-def build_fields_for_ticket(ticket: dict, comments_payload: dict, audit_payload: dict) -> dict:
-    ticket_id = ticket.get("id")
-    last_manager_name, manager_warehouse, manager_comment_date = find_last_manager_from_audit(audit_payload)
-    rucl_form_name = (AUDIT_MANAGERS.get(last_manager_name) or [""])[0]
-
-    comments_data = comments_payload.get("data", [])
-    all_comments = list(comments_data.values()) if isinstance(comments_data, dict) else (
-        comments_data if isinstance(comments_data, list) else [])
-    comments = [c for c in all_comments if c.get('user_id') != 1]
-    comments.sort(key=lambda c: parse_api_datetime(c.get("date_created", "")) or datetime.min)
-    comments_plain = [strip_html(c.get("text", "") or "") for c in comments]
-    full_text = "\n".join(comments_plain)
-    cleaned_full_text = RE_TEMPLATE_TEXT.sub("", full_text)
-
-    sklad = get_warehouse_from_custom_fields(ticket) or manager_warehouse
-    dt_upd = parse_api_datetime(ticket.get("date_updated", ""))
-    date_isp = (manager_comment_date.strftime("%Y-%m-%d") if manager_comment_date
-                else (dt_upd.strftime("%Y-%m-%d") if dt_upd else ""))
-    dt_created = parse_api_datetime(ticket.get("date_created", "")) or datetime.now()
-    date_peredachi = dt_created.strftime("%Y-%m-%d")
-    link = f"https://arbuz.helpdeskeddy.com/ru/ticket/list/filter/id/34/ticket/{ticket_id}"
-    prosr = "Нет"
-    try:
-        if date_peredachi and date_isp:
-            prosr = "Да" if (datetime.strptime(date_isp, "%Y-%m-%d") - datetime.strptime(date_peredachi,
-                                                                                         "%Y-%m-%d")).days > 3 else "Нет"
-    except Exception:
-        pass
-
-    status_t = "Тикет закрыт согласно процессу"
-    order_num = pick_order_number(cleaned_full_text)
-
-    sut = extract_complaint_text(cleaned_full_text, comments_plain)
-    tag = determine_complaint_tag(ticket, cleaned_full_text)
-    how_resolved = guess_how_resolved(cleaned_full_text)
-
-    otv_sotr, punkt, sum_ud = extract_deduction_custom_fields(ticket)
-    manager_comment_text = find_manager_decision_comment(comments)
-
-    parsed_sotr, parsed_punkt, parsed_sum = "", "", ""
-    if manager_comment_text:
-        parsed_sotr, parsed_punkt, parsed_sum = parse_manager_comment_for_deduction(manager_comment_text)
-
-    if not otv_sotr: otv_sotr = parsed_sotr
-    if not punkt: punkt = parsed_punkt
-    if not sum_ud: sum_ud = parsed_sum
-
-    sum_ud = calculate_sum_from_string(sum_ud)
-
-    if otv_sotr and sum_ud and not punkt:
-        punkt = "3.16"
-
-    res_tiketa = ""
-    manager_comment_lower = manager_comment_text.lower()
-
-    if any(kw in manager_comment_lower for kw in KEYWORDS_OTHER_NO_PROCESS):
-        res_tiketa = manager_comment_text
-        status_t = "Нет процесса по закрытию тикета"
-        otv_sotr = ""
-        punkt = ""
         sum_ud = ""
     elif all([otv_sotr, punkt, sum_ud]):
         res_tiketa = "Удержание"
@@ -626,50 +428,9 @@ def build_fields_for_ticket(ticket: dict, comments_payload: dict, audit_payload:
         if how_resolved:
             res_tiketa = f"Решено: {how_resolved}"
         elif manager_comment_text:
-            res_tiketa = manager_comment_text
-
-    sum_poter = calculate_total_loss(cleaned_full_text)
-
-    return {"Дата передачи": date_peredachi, "Руководитель": rucl_form_name or "", "Склад": sklad or "", "Ссылка": link,
-            "Дата исполнения": date_isp or "", "Просрочка": prosr, "Статус тикета": status_t,
-            "Номер заказа": order_num, "Тег жалобы": tag, "Суть жалобы": sut,
-            "Ответственный сотрудник": otv_sotr, "Решение тикета": res_tiketa, "Пункт удержания": punkt,
-            "Сумма удержания": sum_ud, "Как решен вопрос": how_resolved, "Сумма потерь": sum_poter}
-
-
-driver = None
-
-
-# селениум
-def start_driver():
-    global driver
-    if driver is not None:
-        try:
-            _ = driver.window_handles
-        except Exception:
-            driver = None
-    if driver is None:
-        options = Options()
-        profile_path = os.path.join(os.path.expanduser("~"), "SeleniumChromeProfiles", "HDE_Filler_Profile")
+            res_tiketa = manager_comment_text, "HDE_Filler_Profile")
         options.add_argument(f"user-data-dir={profile_path}")
         options.add_experimental_option('excludeSwitches', ['enable-logging'])
-
-        if sys.platform == "win32":
-            driver_filename = "chromedriver.exe"
-        else:
-            driver_filename = "chromedriver"
-
-        if getattr(sys, 'frozen', False):
-            application_path = os.path.dirname(sys.executable)
-        else:
-            application_path = os.path.dirname(os.path.abspath(__file__))
-
-        chrome_driver_path = os.path.join(application_path, driver_filename)
-
-        if not os.path.exists(chrome_driver_path):
-            error_message = (f"Ошибка: {driver_filename} не найден!\n\n"
-                             f"Ожидаемый путь:\n{chrome_driver_path}\n\n"
-                             f"Пожалуйста, поместите {driver_filename} в ту же папку, что и программу.")
             messagebox.showerror("Файл не найден", error_message)
             sys.exit(error_message)
 
@@ -711,29 +472,6 @@ def _fill_date_field_by_position(position: int, ymd: str):
             date_input = container.find_element(By.CSS_SELECTOR, "input[type='date']");
             _js_set_value_and_dispatch(date_input, ymd);
             return
-        except Exception:
-            pass
-        try:
-            y, m, d = ymd.split('-');
-            day = container.find_element(By.XPATH, ".//input[@aria-label='День' or @aria-label='Day']")
-            month = container.find_element(By.XPATH, ".//input[@aria-label='Месяц' or @aria-label='Month']")
-            year = container.find_element(By.XPATH, ".//input[@aria-label='Год' or @aria-label='Year']")
-            _js_set_value_and_dispatch(day, d);
-            _js_set_value_and_dispatch(month, m);
-            _js_set_value_and_dispatch(year, y);
-            return
-        except Exception:
-            pass
-        try:
-            text_input = container.find_element(By.CSS_SELECTOR, "input[type='text']");
-            y, m, d = ymd.split('-');
-            _js_set_value_and_dispatch(text_input, f"{d}.{m}.{y}");
-            return
-        except Exception:
-            pass
-    except Exception as e:
-        print(f"!!! Ошибка при поиске/заполнении поля даты #{position + 1}: {e}")
-
 
 def _fill_field_by_label(label_text: str, value: str):
     if not value: return
@@ -804,116 +542,6 @@ def _fill_decision_other(text_value: str):
         if 'app' in globals() and isinstance(app, ctk.CTk): app.log(err, 'error')
 
 
-def fill_form_fields(fields: dict):
-    _fill_date_field_by_position(0, fields.get("Дата передачи", ""));
-    _fill_date_field_by_position(1, fields.get("Дата исполнения", ""))
-    _fill_field_by_label("Ссылка", fields.get("Ссылка", ""));
-    _fill_field_by_label("Номер заказа", fields.get("Номер заказа", ""))
-    _fill_field_by_label("Суть жалобы", fields.get("Суть жалобы", ""));
-    _click_option_by_label_and_text("Ответственный руководитель", fields.get("Руководитель", ""))
-    _click_option_by_label_and_text("Склад", fields.get("Склад", ""));
-    _click_option_by_label_and_text("Просрочка", fields.get("Просрочка", ""))
-    _click_option_by_label_and_text("Статус тикета", fields.get("Статус тикета", ""));
-    _click_option_by_label_and_text("Тег жалобы", fields.get("Тег жалобы", ""))
-    _fill_special_text_field("Ответственный сотрудник за жалобу", fields.get("Ответственный сотрудник", ""));
-
-    decision = fields.get("Решение тикета", "")
-    if decision in STANDARD_DECISIONS:
-        _click_option_by_label_and_text("Решение тикета", decision)
-    else:
-        _fill_decision_other(decision)
-
-    time.sleep(0.3)
-    _fill_field_by_label("Пункт удержания", fields.get("Пункт удержания", ""));
-    _fill_special_text_field("Сумма удержания", fields.get("Сумма удержания", ""))
-    _click_option_by_label_and_text("Как был решен вопрос", fields.get("Как решен вопрос", ""));
-    _fill_field_by_label("Сумма потерь", fields.get("Сумма потерь", ""))
-
-
-# --- ОСНОВНОЙ КЛАСС ПРИЛОЖЕНИЯ ---
-class App(ctk.CTk):
-    def __init__(self):
-        super().__init__()
-        self.title("HDE → Google Form Filler");
-        self.geometry("1200x720")
-        ctk.set_appearance_mode("dark");
-        ctk.set_default_color_theme("dark-blue")
-
-        setup_database()
-
-        self.grid_columnconfigure(1, weight=1);
-        self.grid_rowconfigure(0, weight=1)
-        self.sidebar_frame = ctk.CTkFrame(self, width=280, corner_radius=0);
-        self.sidebar_frame.grid(row=0, column=0, sticky="nsew");
-        self.sidebar_frame.grid_rowconfigure(4, weight=1)
-        self.logo_label = ctk.CTkLabel(self.sidebar_frame, text="HDE Filler", font=ctk.CTkFont(size=20, weight="bold"));
-        self.logo_label.grid(row=0, column=0, padx=20, pady=(20, 10))
-
-        load_frame = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent");
-        load_frame.grid(row=1, column=0, padx=20, pady=10, sticky="ew")
-        ctk.CTkLabel(load_frame, text="📥 Загрузка тикетов", font=ctk.CTkFont(size=16, weight="bold"), anchor="w").pack(
-            pady=(0, 10), fill="x")
-        self.btn_load = ctk.CTkButton(load_frame, text="Загрузить 'В процессе'", command=self.load_tickets_open);
-        self.btn_load.pack(fill="x", pady=5)
-        self.btn_load_1000 = ctk.CTkButton(load_frame, text="Загрузить 1000 тикетов", command=self.load_tickets_bulk);
-        self.btn_load_1000.pack(fill="x", pady=5)
-
-        manual_frame = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent");
-        manual_frame.grid(row=2, column=0, padx=20, pady=10, sticky="ew")
-        ctk.CTkLabel(manual_frame, text="🕹️ Управление и отчеты", font=ctk.CTkFont(size=16, weight="bold"),
-                     anchor="w").pack(pady=(0, 10), fill="x")
-        self.btn_stats = ctk.CTkButton(manual_frame, text="📊 Показать статистику", command=self.show_statistics_window);
-        self.btn_stats.pack(fill="x", pady=5)
-        self.btn_list = ctk.CTkButton(manual_frame, text="📋 Показать список", command=self.show_full_list_window)
-        self.btn_list.pack(fill="x", pady=5)
-        self.btn_fill = ctk.CTkButton(manual_frame, text="Заполнить следующий (Cmd+Opt+N)", state="disabled",
-                                      command=self.fill_next_manual);
-        self.btn_fill.pack(fill="x", pady=5)
-        self.btn_submit_and_close = ctk.CTkButton(manual_frame, text="Отправить и Закрыть (Cmd+Opt+S)",
-                                                  state="disabled",
-                                                  command=self.submit_and_close_manual);
-        self.btn_submit_and_close.pack(fill="x", pady=5)
-        self.btn_skip = ctk.CTkButton(manual_frame, text="Пропустить текущий", state="disabled",
-                                      command=self.skip_current);
-        self.btn_skip.pack(fill="x", pady=5)
-
-        tickonator_frame = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent");
-        tickonator_frame.grid(row=3, column=0, padx=20, pady=10, sticky="ew")
-        ctk.CTkLabel(tickonator_frame, text="🤖 Автоматизация", font=ctk.CTkFont(size=16, weight="bold"),
-                     anchor="w").pack(pady=(0, 10), fill="x")
-        self.btn_tickonator_virgin = ctk.CTkButton(tickonator_frame, text="💎 Тикетонатор (Девственница)",
-                                                   state="disabled", command=self.start_tickonator_virgin,
-                                                   fg_color="#00BCD4", hover_color="#0097A7", height=35,
-                                                   font=ctk.CTkFont(size=13, weight="bold"));
-        self.btn_tickonator_virgin.pack(fill="x", pady=5)
-        self.btn_tickonator_forgiving = ctk.CTkButton(tickonator_frame, text="🔥 Тикетонатор Давалка", state="disabled",
-                                                      command=self.start_tickonator_forgiving, fg_color="#E91E63",
-                                                      hover_color="#C2185B", height=35,
-                                                      font=ctk.CTkFont(size=13, weight="bold"));
-        self.btn_tickonator_forgiving.pack(fill="x", pady=5)
-        self.btn_tickonator = ctk.CTkButton(tickonator_frame, text="⚡ Тикетонатор (Строгий)", state="disabled",
-                                            command=self.start_tickonator, fg_color="#673AB7", hover_color="#512DA8",
-                                            height=35, font=ctk.CTkFont(size=13, weight="bold"));
-        self.btn_tickonator.pack(fill="x", pady=5)
-
-        self.btn_interrupt = ctk.CTkButton(self.sidebar_frame, text="🛑 Прервать цикл", state="disabled",
-                                           command=self.interrupt_tickonator, fg_color="#D32F2F",
-                                           hover_color="#B71C1C");
-        self.btn_interrupt.grid(row=5, column=0, padx=20, pady=(10, 5), sticky="sew")
-        self.btn_quit = ctk.CTkButton(self.sidebar_frame, text="Выход", command=self.on_quit);
-        self.btn_quit.grid(row=6, column=0, padx=20, pady=(5, 20), sticky="ew")
-
-        self.log_textbox = ctk.CTkTextbox(self, wrap="word", font=("Consolas", 13), border_width=0);
-        self.log_textbox.grid(row=0, column=1, padx=(10, 20), pady=(20, 20), sticky="nsew")
-        for tag, color in {'success': '#4CAF50', 'error': '#F44336', 'warning': '#FFC107', 'info': '#2196F3',
-                           'forgiving': '#E91E63', 'virgin': '#00BCD4'}.items():
-            self.log_textbox.tag_config(tag, foreground=color)
-
-        self.tickets_queue, self.current_idx = [], -1
-        self.ticket_window_handle, self.form_window_handle, self.tickonator_running = None, None, False
-        self.protocol("WM_DELETE_WINDOW", self.on_quit)
-
-        self.setup_global_hotkeys()
 
 #горячие клавиши (которые не работают )
     def setup_global_hotkeys(self):
@@ -988,26 +616,7 @@ class App(ctk.CTk):
                 if 'data' not in raw or not raw['data']: self.log("Больше тикетов не найдено.", "warning"); break
                 new_tickets = [(int(v.get("id") or k), v) for k, v in raw['data'].items() if
                                str(v.get("id") or k).isdigit()]
-                if not new_tickets: break
-                all_tickets.extend(new_tickets);
-                self.log(f"Загружено {len(all_tickets)} из ~{limit} тикетов...");
-                page += 1;
-                time.sleep(0.5)
-            self.tickets_queue = sorted(all_tickets[:limit], key=lambda x: parse_api_datetime(
-                x[1].get("date_created", "")) or datetime.now())
-            self.current_idx = -1;
-            self.log(f"✅ Итого загружено тикетов: {len(self.tickets_queue)}", "success")
-            if self.tickets_queue:
-                self._set_buttons_state_after_load("normal");
-                messagebox.showinfo("Готово",
-                                    f"Загружено {len(self.tickets_queue)} тикетов.")
-            else:
-                self._set_buttons_state_after_load("disabled");
-                messagebox.showinfo("Пусто",
-                                    "Нет тикетов для обработки.")
-        except Exception as e:
-            self.log(f"❌ Ошибка API: {e}", "error");
-            messagebox.showerror("Ошибка API",
+                if not new_tickets: break\
                                  f"Не удалось загрузить тикеты.\n{e}")
 
     def auto_close_and_skip(self, ticket_id, reason: str):
@@ -1099,96 +708,6 @@ class App(ctk.CTk):
             for handle in [h for h in current_handles if h != main_handle]:
                 try:
                     drv.switch_to.window(handle);
-                    drv.close()
-                except:
-                    pass
-            drv.switch_to.window(main_handle);
-            drv.get(fields.get("Ссылка"));
-            self.ticket_window_handle = drv.current_window_handle
-            drv.switch_to.new_window('window');
-            drv.get(FORM_URL);
-            self.form_window_handle = drv.current_window_handle
-            sw, sh = drv.execute_script("return [window.screen.width, window.screen.height];");
-            hw = sw // 2
-            drv.switch_to.window(self.ticket_window_handle);
-            drv.set_window_position(0, 0);
-            drv.set_window_size(hw, sh)
-            drv.switch_to.window(self.form_window_handle);
-            drv.set_window_position(hw, 0);
-            drv.set_window_size(hw, sh)
-        else:
-            self.log("Обновляю существующие окна...");
-            drv.switch_to.window(self.ticket_window_handle);
-            drv.get(fields.get("Ссылка"))
-            drv.switch_to.window(self.form_window_handle);
-            drv.get(FORM_URL)
-        drv.switch_to.window(self.form_window_handle);
-        time.sleep(2)
-
-    def _submit_google_form(self) -> bool:
-        self.log("Шаг 1/2: Отправка Google Формы...")
-        try:
-            driver.switch_to.window(self.form_window_handle)
-
-            submit_button_xpath = "//div[@role='button'][.//span[text()='Отправить']]"
-            submit_button = WebDriverWait(driver, WAIT_TIMEOUT).until(
-                EC.element_to_be_clickable((By.XPATH, submit_button_xpath)))
-
-            driver.execute_script("arguments[0].click();", submit_button)
-
-            try:
-                WebDriverWait(driver, 10).until(
-                    lambda d:
-                    d.find_elements(By.XPATH,
-                                    "//*[contains(text(), 'Ответ записан') or contains(text(), 'Your response has been recorded')]")
-                    or
-                    d.find_elements(By.XPATH,
-                                    "//*[contains(text(), 'Отправить ещё один ответ') or contains(text(), 'Submit another response')]")
-                    or
-                    "formResponse" in d.current_url
-                    or
-                    d.find_elements(By.XPATH,
-                                    "//*[contains(text(), 'Обязательный вопрос') or contains(text(), 'This is a required question')]")
-                )
-
-                errors = driver.find_elements(By.XPATH,
-                                              "//*[contains(text(), 'Обязательный вопрос') or contains(text(), 'This is a required question')]")
-                if errors:
-                    visible_errors = [e for e in errors if e.is_displayed()]
-                    if visible_errors:
-                        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", visible_errors[0])
-                        self.log(f"❌ Ошибка валидации Google Forms! Не заполнены обязательные поля.", "error")
-                        messagebox.showwarning("Ошибка формы",
-                                               "Google Форма не отправлена!\nЕсть незаполненные обязательные поля.")
-                        return False
-
-                if ("formResponse" in driver.current_url
-                        or driver.find_elements(By.XPATH, "//*[contains(text(), 'Ответ записан')]")
-                        or driver.find_elements(By.XPATH, "//*[contains(text(), 'Отправить ещё один ответ')]")):
-                    self.log("✅ Форма успешно отправлена (подтверждено).", "success")
-                    time.sleep(1)
-                    return True
-
-                self.log("⚠️ Не удалось подтвердить отправку формы (страница не изменилась).", "warning")
-                return False
-
-            except Exception:
-                self.log("⚠️ Тайм-аут ожидания ответа от Google Forms. Проверьте браузер.", "warning")
-                return False
-
-        except Exception as e:
-            self.log(f"❌ Критическая ошибка Selenium: {e}", "error")
-            messagebox.showerror("Ошибка Selenium", f"Сбой при работе с формой.\n\nОшибка: {e}")
-            return False
-
-    def _close_current_ticket_in_hde(self) -> bool:
-        tid, _ = self.tickets_queue[self.current_idx]
-        self.log(f"Шаг 2/2: Закрытие заявки ID={tid} в HelpDeskEddy...")
-        try:
-            api_update_ticket_status(tid, status="closed");
-            self.log(f"✅ Заявка ID={tid} успешно закрыта.",
-                     "success");
-            return True
         except Exception as e:
             self.log(f"❌ Не удалось закрыть заявку ID={tid}. Ошибка API: {e}", "error");
             messagebox.showerror(
@@ -1218,76 +737,6 @@ class App(ctk.CTk):
         if 0 <= self.current_idx < len(self.tickets_queue):
             tid, _ = self.tickets_queue[self.current_idx]
             self.log(f"⏩ Тикет id={tid} пропущен вручную.", "warning")
-            log_skipped_ticket_to_db(tid, "Пропущено пользователем вручную")
-        self.fill_next_manual()
-
-    def start_tickonator(self):
-        self._start_tickonator_base(self.tickonator_strict_loop, "Тикетонатор (Строгий)")
-
-    def start_tickonator_forgiving(self):
-        self._start_tickonator_base(self.tickonator_forgiving_loop, "Тикетонатор Давалка")
-
-    def start_tickonator_virgin(self):
-        self._start_tickonator_base(self.tickonator_virgin_loop, "Тикетонатор (Девственница)")
-
-    def _start_tickonator_base(self, loop_function, mode_name):
-        if self.tickonator_running: return
-        self.log("\n" + "#" * 80, "info");
-        self.log(f"🚀 Запуск '{mode_name}'! Начинаю автоматическую обработку.", "info");
-        self.log("#" * 80 + "\n", "info")
-        self.tickonator_running = True;
-        self._set_buttons_state_during_run(True);
-        self.after(100, loop_function)
-
-    def interrupt_tickonator(self):
-        if not self.tickonator_running: return
-        self.tickonator_running = False
-        self.log("\n" + "#" * 80, "warning");
-        self.log("🛑 Цикл 'Тикетонатора' прерван пользователем.", "warning");
-        self.log("#" * 80 + "\n", "warning")
-        self._set_buttons_state_during_run(False)
-
-    def tickonator_strict_loop(self):
-        self._tickonator_generic_loop(is_forgiving=False)
-
-    def tickonator_forgiving_loop(self):
-        self._tickonator_generic_loop(is_forgiving=True)
-
-    def _validate_fields(self, fields: dict) -> list:
-        required_fields = ESSENTIAL_FIELDS.copy()
-        if fields.get("Тег жалобы") == "Лишний товар":
-            if "Как решен вопрос" in required_fields:
-                required_fields.remove("Как решен вопрос")
-        missing = [key for key in required_fields if not fields.get(key)]
-        if fields.get("Решение тикета") == "Удержание":
-            missing.extend(key for key in DEDUCTION_FIELDS if not fields.get(key))
-        return missing
-
-    def _tickonator_generic_loop(self, is_forgiving: bool):
-        if not self.tickonator_running: return
-        self.current_idx += 1
-        if self._is_queue_finished(): return
-        current_ticket = self.tickets_queue[self.current_idx]
-        tid, _ = current_ticket
-        fields = self._process_one_ticket(current_ticket, is_auto_mode=True)
-        if fields is None: self.after(100,
-                                      self.tickonator_forgiving_loop if is_forgiving else self.tickonator_strict_loop); return
-        missing_fields = self._validate_fields(fields)
-        if missing_fields:
-            reason = f"Неполные данные: {', '.join(missing_fields)}"
-            log_skipped_ticket_to_db(tid, reason)
-
-            if is_forgiving:
-                self.log(f"⏩ ДАВАЛКА-ПРОПУСК. Тикет ID={tid} пропущен ({reason})", "forgiving")
-                self.after(100, self.tickonator_forgiving_loop)
-            else:
-                self.log(f"❗️ АВТОМАТИЗАЦИЯ ОСТАНОВЛЕНА. {reason}", "error")
-                messagebox.showwarning("Тикетонатор остановлен",
-                                       f"Не удалось заполнить все поля для тикета ID={tid}.\n\nПропущены: {', '.join(missing_fields)}")
-                self.interrupt_tickonator()
-            return
-
-        if self._submit_google_form():
             if self._close_current_ticket_in_hde():
                 save_ticket_data_to_db(fields, current_ticket[0])
                 self.tickets_queue.pop(self.current_idx);
@@ -1298,32 +747,7 @@ class App(ctk.CTk):
                 self.interrupt_tickonator()
         else:
             self.log("❌ Ошибка при отправке формы (Валидация). Цикл остановлен.", "error")
-            self.interrupt_tickonator()
-
-    def tickonator_virgin_loop(self):
-        if not self.tickonator_running: return
-        self.current_idx += 1
-        if self._is_queue_finished(): return
-        tid, ticket = current_ticket = self.tickets_queue[self.current_idx]
-        self.log("\n" + "=" * 80);
-        self.log(f"▶️  ПРЕДПРОВЕРКА [{self.current_idx + 1}/{len(self.tickets_queue)}] ID={tid}", 'virgin')
-
-        reason = ""
-        try:
-            audit_payload = api_get_ticket_audit(tid)
-        except Exception:
-            reason = "Ошибка получения аудита"
-            log_skipped_ticket_to_db(tid, reason)
-            self.log(f"⏩ ДЕВСТВЕННИЦА-ПРОПУСК. Тикет ID={tid} пропущен ({reason}).", "forgiving");
-            self.after(100, self.tickonator_virgin_loop);
-            return
-
-        last_manager_name, _, _ = find_last_manager_from_audit(audit_payload)
-        if last_manager_name == "Нуржамал Мукаева":
-            if self.auto_close_and_skip(tid, "Правило 'Нуржамал Мукаева'"): self.tickets_queue.pop(
-                self.current_idx); self.current_idx -= 1
-            self.after(100, self.tickonator_virgin_loop);
-            return
+            self.interrupt_tickonator(
 
         try:
             comments_payload = api_get_comments(tid)
@@ -1342,37 +766,12 @@ class App(ctk.CTk):
             self.after(100, self.tickonator_virgin_loop);
             return
 
-        self.log(f"✅ Данные для тикета ID={tid} идеальны. Начинаю полное заполнение...", "success")
-        try:
-            self._update_browser_windows(fields);
-            fill_form_fields(fields)
-        except Exception as e:
-            self.log(f"❌ Ошибка Selenium при заполнении идеального тикета ID={tid}: {e}", "error")
-            self.interrupt_tickonator();
-            return
 
         if self._submit_google_form():
             if self._close_current_ticket_in_hde():
                 save_ticket_data_to_db(fields, tid)
                 self.tickets_queue.pop(self.current_idx);
                 self.current_idx -= 1;
-                self.after(600, self.tickonator_virgin_loop)
-            else:
-                self.log("❌ Ошибка при закрытии тикета (API). Цикл остановлен.", "error")
-                self.interrupt_tickonator()
-        else:
-            self.log("❌ Ошибка при отправке формы (Валидация). Цикл остановлен.", "error")
-            self.interrupt_tickonator()
-
-    def show_full_list_window(self):
-        list_window = ctk.CTkToplevel(self)
-        list_window.title("Полный список обработанных тикетов")
-        list_window.geometry("900x600")
-        list_window.transient(self)
-
-        try:
-            conn = sqlite3.connect('statistics.db')
-            cursor = conn.cursor()
             cursor.execute(
                 "SELECT nomer_zakaza, tag_zhaloby, otvetstvennyy_sotrudnik, summa_poter FROM tickets ORDER BY processed_at DESC")
             records = cursor.fetchall()
@@ -1391,17 +790,6 @@ class App(ctk.CTk):
         style.map('Treeview', background=[('selected', '#22559b')])
         style.configure("Treeview.Heading", background="#565b5e", foreground="white", relief="flat")
         style.map("Treeview.Heading", background=[('active', '#3484F0')])
-
-        tree = ttk.Treeview(frame, columns=("order", "tag", "employee", "loss"), show='headings')
-        vsb = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
-        hsb = ttk.Scrollbar(frame, orient="horizontal", command=tree.xview)
-        tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
-        tree.grid(row=0, column=0, sticky='nsew')
-        vsb.grid(row=0, column=1, sticky='ns')
-        hsb.grid(row=1, column=0, sticky='ew')
-        frame.grid_rowconfigure(0, weight=1)
-        frame.grid_columnconfigure(0, weight=1)
-
         tree.heading("order", text="Номер заказа")
         tree.heading("tag", text="Тег жалобы")
         tree.heading("employee", text="Ответственный сотрудник")
@@ -1433,68 +821,10 @@ class App(ctk.CTk):
                          text_color="orange").pack(pady=20)
             return
 
-        try:
-            conn = sqlite3.connect('statistics.db')
-            cursor = conn.cursor()
-
-            cursor.execute("SELECT COUNT(*) FROM tickets")
-            processed_count = cursor.fetchone()[0]
-
-            cursor.execute("SELECT COUNT(*) FROM skipped_tickets")
-            skipped_count = cursor.fetchone()[0]
-
-            cursor.execute("SELECT reason, COUNT(*) as cnt FROM skipped_tickets GROUP BY reason ORDER BY cnt DESC")
-            skip_reasons = cursor.fetchall()
-
-            conn.close()
-
-        except Exception as e:
-            ctk.CTkLabel(main_frame, text=f"Ошибка загрузки данных из БД:\n{e}", text_color="red").pack(pady=20)
-            return
-
-        chart_frame = ctk.CTkFrame(main_frame)
-        chart_frame.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
-
-        fig, ax = plt.subplots(figsize=(6, 4), dpi=100)
-        plt.style.use('dark_background')
-        fig.patch.set_alpha(0)
-        ax.set_facecolor('#2B2B2B')
-
-        labels = ['Обработано', 'Пропущено']
-        counts = [processed_count, skipped_count]
-        colors = ['#4CAF50', '#F44336']
-
-        bars = ax.bar(labels, counts, color=colors)
-        ax.set_title('Соотношение обработанных и пропущенных тикетов', color='white', fontsize=12)
-        ax.tick_params(axis='x', colors='white')
-        ax.tick_params(axis='y', colors='white')
-        ax.set_ylabel('Количество тикетов', color='white')
 
         for bar in bars:
             yval = bar.get_height()
-            ax.text(bar.get_x() + bar.get_width() / 2.0, yval + 0.1, int(yval), ha='center', va='bottom', color='white')
-
-        plt.tight_layout()
-        canvas = FigureCanvasTkAgg(fig, master=chart_frame)
-        canvas.draw()
-        canvas.get_tk_widget().pack(side=ctk.TOP, fill=ctk.BOTH, expand=True)
-
-        report_frame = ctk.CTkFrame(main_frame)
-        report_frame.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
-
-        textbox = ctk.CTkTextbox(report_frame, wrap="word", font=("Consolas", 12))
-        textbox.pack(expand=True, fill="both", padx=5, pady=5)
-
-        report_lines = ["АНАЛИЗ ПРОПУЩЕННЫХ ЗАЯВОК\n" + "=" * 40 + "\n"]
-        if not skip_reasons:
-            report_lines.append("Пропущенных заявок не найдено.")
-        else:
-            for reason, count in skip_reasons:
-                report_lines.append(f"- {reason}: {count} раз")
-
-        textbox.insert("1.0", "\n".join(report_lines))
-
-        stats_window.focus()
+            ax.text(bar.get_x() + bar.get_width() / 2.0, yval + 0.1, int(yval)
 
     def on_quit(self):
         global driver
