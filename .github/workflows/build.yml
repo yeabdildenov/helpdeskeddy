@@ -2,8 +2,8 @@ name: Build Windows EXE
 
 on:
   push:
-    branches: [ "main" ]  # Запускать сборку при каждом сохранении в ветку main
-  workflow_dispatch:      # Позволяет запустить сборку вручную кнопкой
+    branches: [ "main" ]
+  workflow_dispatch:
 
 jobs:
   build:
@@ -16,22 +16,21 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11' # Рекомендую 3.11 для стабильной работы Nuitka
+          python-version: '3.11'
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install nuitka customtkinter selenium requests pandas matplotlib pynput
-          # Добавили pynput, так как он есть в вашем коде
+          python -m pip install nuitka zstandard customtkinter selenium requests pandas matplotlib pynput
+          # Мы используем python -m pip для надежности и добавили zstandard
 
       - name: Build EXE with Nuitka
         run: |
-          python -m Nuitka --standalone --onefile --windows-disable-console --enable-plugin=tk-inter --include-data-files=chromedriver.exe=. main.py
-          # Мы добавили плагин tk-inter (нужен для графики)
-          # И включили chromedriver.exe в сборку
+          python -m nuitka --standalone --onefile --windows-disable-console --enable-plugin=tk-inter --include-data-files=chromedriver.exe=. main.py
+          # Исправили Nuitka на nuitka (с маленькой буквы)
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: HDE_Filler_Windows
-          path: main.exe  # Имя файла, который создаст Nuitka
+          path: main.exe
